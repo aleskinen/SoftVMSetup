@@ -1,0 +1,318 @@
+usermod -a -G sodu <user>
+apt install sudo
+dpkg-reconfigure locales
+sudo systemctl disable --now fstrim.timer
+sudo sed -i 's/issue_discards = 1/issue_discards = 0/' /etc/lvm/lvm.conf
+sudo nano /etc/default/grub
+GRUB_CMDLINE_LINUX_DEFAULT="quiet elevator=none"
+sudo update-grub && sudo reboot
+sudo update-initramfs -u
+sudo dpkg-reconfigure locales
+export LANG="en_US.UTF-8"
+  en_US.UTF-8... done
+  fi_FI.UTF-8... done
+  sv_SE.UTF-8... done
+sudo nano /etc/ssh/sshd_config
+Find the line AcceptEnv LANG LC_* and comment it out with a #:
+
+
+sudo nano /etc/sysctl.d/60-ddos-hardening.conf
+
+#Rules for DDoS protection
+cat > /etc/nftables.conf
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+    # Dynamic set to hold banned IPv4 addresses for 10 minutes
+    set blocklist_v4 {
+        type ipv4_addr
+        flags dynamic, timeout
+        timeout 10m
+    }
+
+    # Dynamic set to hold banned IPv6 addresses for 10 minutes
+    set blocklist_v6 {
+        type ipv6_addr
+        flags dynamic, timeout
+        timeout 10m
+    }
+
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # 1. Allow loopback and established/related traffic
+        iifname "lo" accept
+        ct state established,related accept
+
+        # 2. Drop invalid packets early (stops malformed packet floods)
+        ct state invalid drop
+
+        # 3. Drop traffic from already-banned IPs
+        ip saddr @blocklist_v4 drop
+        ip6 saddr @blocklist_v6 drop
+
+        # 4. Rate-limit ICMP (Ping)
+        ip protocol icmp icmp type echo-request limit rate 2/second burst 5 packets accept
+        ip6 nexthdr icmpv6 icmpv6 type echo-request limit rate 2/second burst 5 packets accept
+
+        # 5. Protect SSH (Max 3 new connections per minute per IP)
+        tcp dport 22 ct state new meter ssh_limit_v4 { ip saddr limit rate over 3/minute burst 3 packets } add @blocklist_v4 { ip saddr timeout 1h } drop
+        tcp dport 22 ct state new meter ssh_limit_v6 { ip6 saddr limit rate over 3/minute burst 3 packets } add @blocklist_v6 { ip6 saddr timeout 1h } drop
+        tcp dport 22 accept
+
+        # 6. Protect HTTP/HTTPS against SYN/Connection floods
+        # Ban IPs opening more than 25 new connections/sec (burst 50)
+        tcp dport { 80, 443 } ct state new meter web_rate_v4 { ip saddr limit rate over 25/second burst 50 packets } add @blocklist_v4 { ip saddr } drop
+        tcp dport { 80, 443 } ct state new meter web_rate_v6 { ip6 saddr limit rate over 25/second burst 50 packets } add @blocklist_v6 { ip6 saddr } drop
+
+        # Limit max concurrent active connections per IP to 50
+        tcp dport { 80, 443 } ct state new meter web_conn_v4 { ip saddr ct count over 50 } drop
+        tcp dport { 80, 443 } ct state new meter web_conn_v6 { ip6 saddr ct count over 50 } drop
+
+        # Allow legitimate web traffic
+        tcp dport { 80, 443 } accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+
+sudo nft -c -f /etc/nftables.conf
+sudo systemctl restart nftables
+sudo nft list set inet filter blocklist_v4
+#Check
+sudo nft list set inet filter blocklist_v4
+
+# install Caddy
+sudo apt update
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install -y caddy
+
+#Add caddy-custom with rate limiting and cloudflair
+curl -L "https://caddyserver.com" -o caddy-custom
+chmod +x caddy-custom
+./caddy-custom list-modules | grep -E "rate_limit|cloudflare"
+
+sudo systemctl stop caddy
+sudo dpkg-divert --divert /usr/bin/caddy.default --rename /usr/bin/caddy
+sudo mv caddy-custom /usr/bin/caddy
+sudo chown root:root /usr/bin/caddy
+sudo chmod 755 /usr/bin/caddy
+sudo systemctl start caddy
+
+{
+	# Run rate_limit before other handlers
+	order rate_limit before basicauth
+
+	servers {
+		# Automatically fetch and trust Cloudflare IP ranges so {client_ip} is the real visitor
+		trusted_proxies cloudflare {
+			interval 12h
+			timeout 15s
+		}
+	}
+}
+
+yourdomain.com {
+	# Rate limit: max 20 requests per second per real visitor IP
+	rate_limit {
+		zone dynamic_zone {
+			key {client_ip}
+			events 20
+			window 1s
+		}
+	}
+
+	reverse_proxy 127.0.0.1:8080
+}
+
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+
+~/go/bin/xcaddy build \
+  --with github.com/mholt/caddy-ratelimit \
+  --with ://github.com \
+  --output caddy-custom
+
+./caddy-custom list-modules | grep -E "rate_limit|cloudflare"
+
+
+Your terminal is stripping or mangling https://github.com.
+echo "Z28gaW5zdGFsbCBnaXRodWIuY29tL2NhZGR5c2VydmVyL3hjYWRkeS9jbWQveGNhZGR5QGxhdGVzdAo=" | base64 -d | bash
+
+Build Caddy with Base64
+echo "fi9nby9iaW4veGNhZGR5IGJ1aWxkIC0td2l0aCBnaXRodWIuY29tL21ob2x0L2NhZGR5LXJhdGVsaW1pdCAtLXdpdGggZ2l0aHViLmNvbS9XZWlkaURlbmcvY2FkZHktY2xvdWRmbGFyZS1pcCAtLW91dHB1dCBjYWRkeS1jdXN0b20K" | base64 -d | bash
+
+./caddy-custom list-modules | grep -E "rate_limit|cloudflare"
+
+systemctl stop caddy
+dpkg-divert --divert /usr/bin/caddy.default --rename /usr/bin/caddy
+mv caddy-custom /usr/bin/caddy
+chown root:root /usr/bin/caddy
+chmod 755 /usr/bin/caddy
+systemctl start caddy
+
+cat << 'EOF' > /usr/local/sbin/update-cloudflare-nft.sh
+#!/bin/bash
+set -e
+
+CF_V4=$(curl -s https://cloudflare.com | paste -sd "," -)
+CF_V6=$(curl -s https://cloudflare.com | paste -sd "," -)
+
+if [[ -z "$CF_V4" || -z "$CF_V6" ]]; then
+    echo "Failed to fetch Cloudflare IPs"
+    exit 1
+fi
+
+nft flush set inet filter cloudflare_v4 2>/dev/null || true
+nft flush set inet filter cloudflare_v6 2>/dev/null || true
+
+nft add element inet filter cloudflare_v4 { $CF_V4 }
+nft add element inet filter cloudflare_v6 { $CF_V6 }
+EOF
+chmod +x /usr/local/sbin/update-cloudflare-nft.sh
+
+    set cloudflare_v4 {
+        type ipv4_addr
+        flags interval
+    }
+
+    set cloudflare_v6 {
+        type ipv6_addr
+        flags interval
+    }
+
+        # Only allow HTTP/HTTPS from Cloudflare IPs
+        ip saddr @cloudflare_v4 tcp dport { 80, 443 } accept
+        ip6 saddr @cloudflare_v6 tcp dport { 80, 443 } accept
+
+rm -f /root/caddy-custom
+echo "fi9nby9iaW4veGNhZGR5IGJ1aWxkIC0td2l0aCBnaXRodWIuY29tL21ob2x0L2NhZGR5LXJhdGVsaW1pdCAtLXdpdGggZ2l0aHViLmNvbS9XZWlkaURlbmcvY2FkZHktY2xvdWRmbGFyZS1pcCAtLW91dHB1dCBjYWRkeS1jdXN0b20K" | base64 -d | bash
+
+systemctl stop caddy
+dpkg-divert --divert /usr/bin/caddy.default --rename /usr/bin/caddy
+mv /root/caddy-custom /usr/bin/caddy
+chown root:root /usr/bin/caddy
+chmod 755 /usr/bin/caddy
+systemctl start caddy
+
+cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak
+
+{
+	# Ensure rate_limit runs early in the request pipeline
+	order rate_limit before basicauth
+
+	servers {
+		# Trust Cloudflare IPs so {client_ip} reflects the real visitor
+		trusted_proxies cloudflare {
+			interval 12h
+			timeout 15s
+		}
+	}
+}
+
+yourdomain.com {
+	# Limit each real visitor IP to 20 requests per second
+	rate_limit {
+		zone dynamic_zone {
+			key {client_ip}
+			events 20
+			window 1s
+		}
+	}
+
+	# Forward clean traffic to your internal web application
+	reverse_proxy 127.0.0.1:8080
+}
+
+caddy validate --config /etc/caddy/Caddyfile
+systemctl reload caddy
+
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+    set blocklist_v4 {
+        type ipv4_addr
+        flags dynamic, timeout
+        timeout 1h
+    }
+
+    set blocklist_v6 {
+        type ipv6_addr
+        flags dynamic, timeout
+        timeout 1h
+    }
+
+    # Sets populated automatically by the Cloudflare IP updater script
+    set cloudflare_v4 {
+        type ipv4_addr
+        flags interval
+    }
+
+    set cloudflare_v6 {
+        type ipv6_addr
+        flags interval
+    }
+
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # 1. Allow loopback and existing connections
+        iifname "lo" accept
+        ct state established,related accept
+
+        # 2. Drop malformed packets early
+        ct state invalid drop
+
+        # 3. Drop banned SSH scanners
+        ip saddr @blocklist_v4 drop
+        ip6 saddr @blocklist_v6 drop
+
+        # 4. Rate-limit ICMP (Ping)
+        ip protocol icmp icmp type echo-request limit rate 2/second burst 5 packets accept
+        ip6 nexthdr icmpv6 icmpv6 type echo-request limit rate 2/second burst 5 packets accept
+
+        # 5. Protect SSH (Max 3 new connections/min per IP)
+        tcp dport 22 ct state new meter ssh_limit_v4 { ip saddr limit rate over 3/minute burst 3 packets } add @blocklist_v4 { ip saddr } drop
+        tcp dport 22 ct state new meter ssh_limit_v6 { ip6 saddr limit rate over 3/minute burst 3 packets } add @blocklist_v6 { ip6 saddr } drop
+        tcp dport 22 accept
+
+        # 6. Allow HTTP/HTTPS ONLY from Cloudflare proxy IPs
+        ip saddr @cloudflare_v4 tcp dport { 80, 443 } accept
+        ip6 saddr @cloudflare_v6 tcp dport { 80, 443 } accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+
+nft -c -f /etc/nftables.conf
+systemctl restart nftables
+
+echo "IyEvYmluL2Jhc2gKc2V0IC1lCgpDRl9WND0kKGN1cmwgLXMgaHR0cHM6Ly93d3cuY2xvdWRmbGFyZS5jb20vaXBzLXY0IHwgcGFzdGUgLXNkICIsIiAtKQpDRl9WNj0kKGN1cmwgLXMgaHR0cHM6Ly93d3cuY2xvdWRmbGFyZS5jb20vaXBzLXY2IHwgcGFzdGUgLXNkICIsIiAtKQoKaWYgW1sgLXogIiRDRl9WNCIgfHwgLXogIiRDRl9WNiIgXV07IHRoZW4KICAgIGVjaG8gIkZhaWxlZCB0byBmZXRjaCBDbG91ZGZsYXJlIElQcyIKICAgIGV4aXQgMQpmaQoKbmZ0IGZsdXNoIHNldCBpbmV0IGZpbHRlciBjbG91ZGZsYXJlX3Y0IDI+L2Rldi9udWxsIHx8IHRydWUKbmZ0IGZsdXNoIHNldCBpbmV0IGZpbHRlciBjbG91ZGZsYXJlX3Y2IDI+L2Rldi9udWxsIHx8IHRydWUKCm5mdCBhZGQgZWxlbWVudCBpbmV0IGZpbHRlciBjbG91ZGZsYXJlX3Y0IHsgJENGX1Y0IH0KbmZ0IGFkZCBlbGVtZW50IGluZXQgZmlsdGVyIGNsb3VkZmxhcmVfdjYgeyAkQ0ZfVjYgfQo=" | base64 -d > /usr/local/sbin/update-cloudflare-nft.sh
+chmod +x /usr/local/sbin/update-cloudflare-nft.sh
+/usr/local/sbin/update-cloudflare-nft.sh
+
+nft list set inet filter cloudflare_v4
+
+@reboot sleep 10 && /usr/local/sbin/update-cloudflare-nft.sh
+0 3 * * 0 /usr/local/sbin/update-cloudflare-nft.sh
+
+

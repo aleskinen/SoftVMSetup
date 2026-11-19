@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh Cloudflare IP ranges in nftables
+After=nftables.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/update-cloudflare-nft.py
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run /tmp

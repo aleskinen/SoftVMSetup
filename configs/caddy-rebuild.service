@@ -1,0 +1,14 @@
+[Unit]
+Description=Rebuild custom Caddy with current upstream modules
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/build-caddy.sh
+User=root
+Group=root
+Environment=GOPATH=/var/lib/caddy-build
+Environment=GOCACHE=/var/cache/caddy-build
+PrivateTmp=true
+ProtectHome=true

@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily refresh of Cloudflare nftables address sets
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1d
+RandomizedDelaySec=15min
+Persistent=true
+Unit=cloudflare-nft-update.service
+
+[Install]
+WantedBy=timers.target
